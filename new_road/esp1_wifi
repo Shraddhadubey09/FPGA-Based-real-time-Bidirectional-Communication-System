@@ -1,0 +1,316 @@
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <SoftwareSerial.h>
+
+// =====================================================
+// WIFI
+// =====================================================
+const char* WIFI_SSID = "ritika gupta";
+const char* WIFI_PASSWORD = "g8j2x7fc";
+
+// =====================================================
+// MQTT
+// =====================================================
+const char* MQTT_BROKER = "10.98.170.126";
+const int MQTT_PORT = 1883;
+
+const char* TOPIC_TO_FPGA2 = "roadsos/fpga1/to_fpga2";
+const char* TOPIC_TO_FPGA1 = "roadsos/fpga2/to_fpga1";
+
+// =====================================================
+// ESP1 ↔ FPGA1 UART
+// D5 = RX  ← FPGA1 A14 TX
+// D6 = TX  → FPGA1 C14 RX
+// =====================================================
+SoftwareSerial fpgaSerial(D5, D6);
+
+// =====================================================
+// MQTT
+// =====================================================
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+
+// =====================================================
+// ROAD SOS FRAME
+// =====================================================
+const size_t FRAME_SIZE = 8;
+
+byte frameBuffer[FRAME_SIZE];
+size_t frameIndex = 0;
+
+// =====================================================
+// PRINT FRAME
+// =====================================================
+void printFrame(const char* label, byte* data, size_t len)
+{
+  Serial.print(label);
+
+  for (size_t i = 0; i < len; i++)
+  {
+    Serial.print(" ");
+
+    if (data[i] < 0x10)
+      Serial.print("0");
+
+    Serial.print(data[i], HEX);
+  }
+
+  Serial.println();
+}
+
+// =====================================================
+// FRAME VALIDATION
+// =====================================================
+bool isValidFrame(byte* data, size_t len)
+{
+  if (len != FRAME_SIZE)
+    return false;
+
+  if (data[0] != 0xA5)
+    return false;
+
+  if (data[6] != 0x5A)
+    return false;
+
+  if (data[7] != 0x0A)
+    return false;
+
+  return true;
+}
+
+// =====================================================
+// WIFI
+// =====================================================
+void setupWiFi()
+{
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("          ESP1 WIFI");
+  Serial.println("================================");
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  Serial.print("Connecting to Wi-Fi");
+
+  unsigned long startTime = millis();
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+
+    // Prevent endless blocking
+    if (millis() - startTime > 20000)
+    {
+      Serial.println();
+      Serial.println("WIFI TIMEOUT");
+      return;
+    }
+  }
+
+  Serial.println();
+  Serial.println("WIFI CONNECTED!");
+
+  Serial.print("ESP1 IP: ");
+  Serial.println(WiFi.localIP());
+
+  Serial.print("Signal: ");
+  Serial.print(WiFi.RSSI());
+  Serial.println(" dBm");
+}
+
+// =====================================================
+// MQTT CALLBACK
+// ESP1 receives FPGA2 → ESP2 → MQTT messages
+// =====================================================
+void mqttCallback(char* topic, byte* payload, unsigned int length)
+{
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("MQTT MESSAGE RECEIVED");
+  Serial.println("================================");
+
+  Serial.print("Topic: ");
+  Serial.println(topic);
+
+  Serial.print("Length: ");
+  Serial.println(length);
+
+  // Only accept FPGA2 → FPGA1 topic
+  if (strcmp(topic, TOPIC_TO_FPGA1) != 0)
+  {
+    Serial.println("Ignoring unknown topic");
+    return;
+  }
+
+  // Check complete frame
+  if (!isValidFrame(payload, length))
+  {
+    Serial.println("INVALID ROAD SOS FRAME");
+    return;
+  }
+
+  printFrame("MQTT -> FPGA1:", payload, length);
+
+  // Forward complete frame to FPGA1
+  fpgaSerial.write(payload, length);
+
+  Serial.println("FRAME FORWARDED TO FPGA1");
+}
+
+// =====================================================
+// MQTT CONNECT
+// =====================================================
+void connectMQTT()
+{
+  if (WiFi.status() != WL_CONNECTED)
+    return;
+
+  if (mqttClient.connected())
+    return;
+
+  Serial.println();
+  Serial.println("Connecting to MQTT broker...");
+
+  String clientID = "ESP1_BIDIR_";
+  clientID += String(ESP.getChipId(), HEX);
+
+  if (mqttClient.connect(clientID.c_str()))
+  {
+    Serial.println("MQTT CONNECTED!");
+
+    Serial.print("Broker: ");
+    Serial.println(MQTT_BROKER);
+
+    Serial.print("Port: ");
+    Serial.println(MQTT_PORT);
+
+    // ESP1 receives data coming FROM FPGA2
+    if (mqttClient.subscribe(TOPIC_TO_FPGA1))
+    {
+      Serial.println("Subscribed to FPGA2 → FPGA1 topic");
+    }
+    else
+    {
+      Serial.println("SUBSCRIBE FAILED");
+    }
+  }
+  else
+  {
+    Serial.print("MQTT FAILED | State: ");
+    Serial.println(mqttClient.state());
+  }
+}
+
+// =====================================================
+// SETUP
+// =====================================================
+void setup()
+{
+  Serial.begin(115200);
+
+  fpgaSerial.begin(115200);
+
+  delay(1000);
+
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("       ESP1 BIDIRECTIONAL");
+  Serial.println("================================");
+
+  Serial.println("FPGA UART:");
+  Serial.println("D5 = RX <- FPGA1 TX");
+  Serial.println("D6 = TX -> FPGA1 RX");
+
+  setupWiFi();
+
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+
+  connectMQTT();
+
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("ESP1 READY");
+  Serial.println("FPGA1 <-> ESP1 <-> MQTT");
+  Serial.println("================================");
+}
+
+// =====================================================
+// LOOP
+// =====================================================
+void loop()
+{
+  // ---------------------------------------------------
+  // WIFI
+  // ---------------------------------------------------
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    setupWiFi();
+  }
+
+  // ---------------------------------------------------
+  // MQTT
+  // ---------------------------------------------------
+  if (!mqttClient.connected())
+  {
+    connectMQTT();
+  }
+
+  mqttClient.loop();
+
+  // ---------------------------------------------------
+  // FPGA1 → ESP1 → MQTT
+  // ---------------------------------------------------
+  while (fpgaSerial.available())
+  {
+    byte data = fpgaSerial.read();
+
+    // Wait for Start Of Frame
+    if (frameIndex == 0)
+    {
+      if (data != 0xA5)
+      {
+        continue;
+      }
+    }
+
+    frameBuffer[frameIndex++] = data;
+
+    // Complete 8-byte frame
+    if (frameIndex == FRAME_SIZE)
+    {
+      if (isValidFrame(frameBuffer, FRAME_SIZE))
+      {
+        Serial.println();
+        printFrame("FPGA1 -> MQTT:", frameBuffer, FRAME_SIZE);
+
+        if (mqttClient.connected())
+        {
+          bool success = mqttClient.publish(
+            TOPIC_TO_FPGA2,
+            frameBuffer,
+            FRAME_SIZE,
+            false
+          );
+
+          if (success)
+            Serial.println("MQTT PUBLISHED");
+          else
+            Serial.println("MQTT PUBLISH FAILED");
+        }
+        else
+        {
+          Serial.println("MQTT NOT CONNECTED - FRAME DROPPED");
+        }
+      }
+      else
+      {
+        Serial.println("INVALID FPGA1 FRAME");
+      }
+
+      frameIndex = 0;
+    }
+  }
+}
