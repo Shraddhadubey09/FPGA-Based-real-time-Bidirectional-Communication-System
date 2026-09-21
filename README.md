@@ -1,4 +1,4 @@
-# FPGA-Based Real-Time Industrial Control over Wireless Networks
+# FPGA-Based-real-time-Bidirectional-Communication-System
 
 A hardware-in-the-loop platform for real-time FPGA communication over wireless networks using **UART, ESP8266 Wi-Fi, CRC-based error detection, and bidirectional communication**.
 
@@ -111,7 +111,7 @@ The system is being evaluated for:
 * [x] CRC verification
 * [x] ESP8266 Wi-Fi communication
 * [X] Real-time commnunication
-* [ ] Bidirectional communication
+* [X] Bidirectional communication
 * [ ] Performance characterization
 * [ ] 5G integration
 * [ ] Real-time industrial control demonstration
